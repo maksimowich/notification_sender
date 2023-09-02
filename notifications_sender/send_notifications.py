@@ -1,6 +1,8 @@
 import dateparser
 import datetime
 import pandas as pd
+import requests
+import re
 import smtplib
 from dateutil.relativedelta import relativedelta
 from email.mime.text import MIMEText
@@ -36,7 +38,7 @@ month_translations = {
 }
 
 
-def send_msg(msg, SMTP_USERNAME, SMTP_PASSWORD, SMTP_SERVER, SMTP_PORT):
+def send_msg_email(msg, SMTP_USERNAME, SMTP_PASSWORD, SMTP_SERVER, SMTP_PORT):
     try:
         with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
             server.starttls()
@@ -45,6 +47,15 @@ def send_msg(msg, SMTP_USERNAME, SMTP_PASSWORD, SMTP_SERVER, SMTP_PORT):
         print('Email sent successfully.')
     except Exception as e:
         print('Error sending email:', str(e))
+
+
+def send_msg_telegram(msg, bot_token, group_id):
+    telegram_api_url = f"https://api.telegram.org/bot{bot_token}/sendMessage?chat_id=@{group_id}&text={msg}&parse_mode=MarkdownV2"
+    tel_resp = requests.get(telegram_api_url)
+    if tel_resp.status_code == 200:
+        print("Notification has been sent on Telegram")
+    else:
+        print("Could not send Message")
 
 
 def get_html_birthday_table(teams_members_with_birthday, teams_colors):
@@ -67,6 +78,18 @@ def get_html_birthday_table(teams_members_with_birthday, teams_colors):
     return html_table
 
 
+def get_tgmsg_birthday_table(teams_members_with_birthday, subject):
+    tgmsg = f"*{subject}*\n"
+    traversed_teams = []
+    for team_member_with_birthday in sorted(teams_members_with_birthday, key=lambda x: (x['Команда'], x['День рождения (дата)'].day)):
+        team = team_member_with_birthday['Команда']
+        if team not in traversed_teams:
+            tgmsg += f'\n__*Команда {team}*__\n'
+        traversed_teams.append(team)
+        tgmsg += f"\t• {team_member_with_birthday['Фамилия Имя']} {team_member_with_birthday['День рождения']}\n"
+    return tgmsg
+
+
 def get_html_vacations_table(teams_members_with_vacation, teams_colors):
     html_table = "<table style='border-collapse: collapse; border: 1px solid black;'>"
     html_table += f"""
@@ -86,10 +109,22 @@ def get_html_vacations_table(teams_members_with_vacation, teams_colors):
             <td style='border: 1px solid black; width: 100px;'>{team_member_with_birthday['Дата начала отпуска']}</td>
             <td style='border: 1px solid black; width: 100px;'>{team_member_with_birthday['Дата окончания отпуска']}</td>
             <td style='border: 1px solid black; width: 100px;'>{team_member_with_birthday['Количество дней отпуска']}</td>
-
         </tr>"""
     html_table += "</table>"
     return html_table
+
+
+def get_tgmsg_vacations_table(teams_members_with_vacation, subject):
+    tgmsg = f"*{subject}*\n"
+    traversed_teams = []
+    for team_member_with_birthday in sorted(teams_members_with_vacation, key=lambda x: (x['Команда'], x['Дата начала отпуска (дата)'].day)):
+        team = team_member_with_birthday['Команда']
+        if team not in traversed_teams:
+            traversed_teams.append(team)
+            tgmsg += f'\n__*Команда {team}*__\n'
+        tgmsg += f"""\t• {team_member_with_birthday['Фамилия Имя']} """ \
+                 f"""_{re.escape(team_member_with_birthday['Дата начала отпуска'])} \- {re.escape(team_member_with_birthday['Дата окончания отпуска'])}_\n"""
+    return tgmsg
 
 
 def parse_date_birthday(date_string):
@@ -106,9 +141,10 @@ def parse_date_vacation(date_string):
 
 def send_notifications(SMTP_USERNAME, SMTP_PASSWORD, SENDER_EMAIL, SMTP_SERVER, SMTP_PORT,
                        LINK_BIRTHDAYS, LINK_VACATIONS, LINK_RECEIVER_EMAILS,
-                       DAY_OF_MAILING_BIRTHDAYS, DAY_OF_MAILING_VACATIONS, TEAMS_COLORS):
-    RECEIVER_EMAILS = pd.read_csv(LINK_RECEIVER_EMAILS)['Почта']
-    current_date = datetime.datetime.now().date()
+                       DAY_OF_MAILING_BIRTHDAYS, DAY_OF_MAILING_VACATIONS, TEAMS_COLORS,
+                       bot_token, dr_group_id, vac_group_id):
+    RECEIVER_EMAILS = ['cahr2001@mail.ru'] # pd.read_csv(LINK_RECEIVER_EMAILS)['Почта']
+    current_date = datetime.datetime(year=2023, month=8, day=28) #.now().date()
     teams_members_birthdays = pd.read_csv(LINK_BIRTHDAYS)
     teams_members_birthdays['День рождения (дата)'] = teams_members_birthdays['День рождения'].apply(parse_date_birthday)
     teams_members_with_birthday_today = []
@@ -127,7 +163,8 @@ def send_notifications(SMTP_USERNAME, SMTP_PASSWORD, SENDER_EMAIL, SMTP_SERVER, 
         msg = MIMEMultipart("alternative", policy=SMTPUTF8)
         msg['From'] = SENDER_EMAIL
         msg['To'] = RECEIVER_EMAILS
-        msg['Subject'] = f'Дни рождения {month_translations.get((current_date + relativedelta(months=1)).month)}'
+        subject = f'Дни рождения {month_translations.get((current_date + relativedelta(months=1)).month)}'
+        msg['Subject'] = subject
 
         html = f"""
             <html>
@@ -136,13 +173,15 @@ def send_notifications(SMTP_USERNAME, SMTP_PASSWORD, SENDER_EMAIL, SMTP_SERVER, 
             </html>
         """
         msg.attach(MIMEText(html, "html"))
-        send_msg(msg, SMTP_USERNAME, SMTP_PASSWORD, SMTP_SERVER, SMTP_PORT)
+        send_msg_email(msg, SMTP_USERNAME, SMTP_PASSWORD, SMTP_SERVER, SMTP_PORT)
+        send_msg_telegram(get_tgmsg_birthday_table(teams_members_with_birthday_in_next_month, subject), bot_token, dr_group_id)
 
     if len(teams_members_with_birthday_today) != 0:
         msg = MIMEMultipart("alternative", policy=SMTPUTF8)
         msg['From'] = SENDER_EMAIL
         msg['To'] = RECEIVER_EMAILS
-        msg['Subject'] = 'Дни рождения сегодня'
+        subject = 'Дни рождения СЕГОДНЯ'
+        msg['Subject'] = subject
 
         html = f"""
             <html>
@@ -151,7 +190,8 @@ def send_notifications(SMTP_USERNAME, SMTP_PASSWORD, SENDER_EMAIL, SMTP_SERVER, 
             </html>
         """
         msg.attach(MIMEText(html, "html"))
-        send_msg(msg, SMTP_USERNAME, SMTP_PASSWORD, SMTP_SERVER, SMTP_PORT)
+        send_msg_email(msg, SMTP_USERNAME, SMTP_PASSWORD, SMTP_SERVER, SMTP_PORT)
+        send_msg_telegram(get_tgmsg_birthday_table(teams_members_with_birthday_today, subject), bot_token, dr_group_id)
 
     if current_date.day == DAY_OF_MAILING_VACATIONS:
         teams_members_vacations = pd.read_csv(LINK_VACATIONS)
@@ -166,7 +206,8 @@ def send_notifications(SMTP_USERNAME, SMTP_PASSWORD, SENDER_EMAIL, SMTP_SERVER, 
             msg = MIMEMultipart("alternative", policy=SMTPUTF8)
             msg['From'] = SENDER_EMAIL
             msg['To'] = RECEIVER_EMAILS
-            msg['Subject'] = f'Отпуска коллег {month_translations.get((current_date + relativedelta(months=1)).month)}'
+            subject = f'Отпуска коллег {month_translations.get((current_date + relativedelta(months=1)).month)}'
+            msg['Subject'] = subject
 
             html = f"""
                 <html>
@@ -176,4 +217,5 @@ def send_notifications(SMTP_USERNAME, SMTP_PASSWORD, SENDER_EMAIL, SMTP_SERVER, 
                 </html>
             """
             msg.attach(MIMEText(html, "html"))
-            send_msg(msg, SMTP_USERNAME, SMTP_PASSWORD, SMTP_SERVER, SMTP_PORT)
+            send_msg_email(msg, SMTP_USERNAME, SMTP_PASSWORD, SMTP_SERVER, SMTP_PORT)
+            send_msg_telegram(get_tgmsg_vacations_table(teams_members_with_vacations, subject), bot_token, vac_group_id)
